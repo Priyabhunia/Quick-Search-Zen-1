@@ -87,10 +87,14 @@
     BEHAVIOR_DRAG_RESIZE_ENABLED_PREF,
     true,
   );
-  const SHORTCUTS_TOGGLE_KEY = getPref(
+  let SHORTCUTS_TOGGLE_KEY = getPref(
     SHORTCUTS_TOGGLE_KEY_PREF,
-    "Alt+Shift+Q",
+    "Ctrl+Shift+Q",
   );
+  if (SHORTCUTS_TOGGLE_KEY === "Alt+Shift+Q") {
+    SHORTCUTS_TOGGLE_KEY = "Ctrl+Shift+Q";
+    setPref(SHORTCUTS_TOGGLE_KEY_PREF, SHORTCUTS_TOGGLE_KEY);
+  }
   const SHORTCUTS_ESCAPE_CLOSES = getPref(SHORTCUTS_ESCAPE_CLOSES_PREF, true);
 
   // --- End Preference Configuration ---
@@ -512,9 +516,15 @@
   function loadContentInBrowser(browser, searchUrl) {
     try {
       try {
-        const uri = Services.io.newURI(searchUrl);
         const principal = Services.scriptSecurityManager.getSystemPrincipal();
-        browser.loadURI(uri, { triggeringPrincipal: principal });
+        if (typeof browser.fixupAndLoadURIString === "function") {
+          browser.fixupAndLoadURIString(searchUrl, {
+            triggeringPrincipal: principal,
+          });
+        } else {
+          const uri = Services.io.newURI(searchUrl);
+          browser.loadURI(uri, { triggeringPrincipal: principal });
+        }
       } catch (e) {
         browser.loadURI(searchUrl);
       }
@@ -614,12 +624,18 @@
   }
 
   function parseShortcut(shortcut) {
-    const keyParts = shortcut.split("+").map((k) => k.trim());
-    const mainKey = keyParts[keyParts.length - 1];
+    const keyParts = String(shortcut || "")
+      .split("+")
+      .map((k) => k.trim().toLowerCase())
+      .filter(Boolean);
+    const mainKey = keyParts[keyParts.length - 1] || "";
     return {
-      ctrl: keyParts.includes("Ctrl"),
-      shift: keyParts.includes("Shift"),
-      alt: keyParts.includes("Alt"),
+      ctrl:
+        keyParts.includes("ctrl") ||
+        keyParts.includes("control") ||
+        keyParts.includes("accel"),
+      shift: keyParts.includes("shift"),
+      alt: keyParts.includes("alt"),
       mainKey,
     };
   }
@@ -630,7 +646,8 @@
       event.ctrlKey === parsed.ctrl &&
       event.shiftKey === parsed.shift &&
       event.altKey === parsed.alt &&
-      event.key.toLowerCase() === parsed.mainKey.toLowerCase()
+      !!parsed.mainKey &&
+      event.key.toLowerCase() === parsed.mainKey
     );
   }
 
@@ -659,7 +676,7 @@
     const key = createChromeElement("key");
     key.id = "quicksearch-toggle-key";
 
-    if (parsed.mainKey.toLowerCase() === "enter") {
+    if (parsed.mainKey === "enter") {
       key.setAttribute("keycode", "VK_RETURN");
     } else {
       key.setAttribute(
@@ -708,19 +725,7 @@
         }
 
         // Check for custom toggle key
-        const toggleKey = SHORTCUTS_TOGGLE_KEY;
-        const keyParts = toggleKey.split("+").map((k) => k.trim());
-        const hasCtrl = keyParts.includes("Ctrl");
-        const hasShift = keyParts.includes("Shift");
-        const hasAlt = keyParts.includes("Alt");
-        const mainKey = keyParts[keyParts.length - 1];
-
-        if (
-          event.ctrlKey === hasCtrl &&
-          event.shiftKey === hasShift &&
-          event.altKey === hasAlt &&
-          event.key.toLowerCase() === mainKey.toLowerCase()
-        ) {
+        if (shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
           event.preventDefault();
           event.stopPropagation();
 

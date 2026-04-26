@@ -5,11 +5,6 @@
     "homepage": "https://github.com/Priyabhunia/Quick-Search-Zen-1",
     "preferences": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/main/preferences.json",
     "scripts": {
-        "quickSearch.uc.js": {
-            "include": [
-                "chrome://browser/content/browser.xhtml"
-            ]
-        },
         "quickSearch_NoBar.uc.js": {
             "include": [
                 "chrome://browser/content/browser.xhtml"

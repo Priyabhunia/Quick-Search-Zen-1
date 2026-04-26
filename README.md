@@ -220,7 +220,7 @@ Quick Search supports multiple ways to perform searches and uses your browser's 
 3. Press `Enter` to search
 
 #### **Global Keyboard Shortcut** (New Feature):
-1. Press `Alt + Shift + Q` (or your configured shortcut) anywhere in the browser
+1. Press `Ctrl + Shift + Q` (or your configured shortcut) anywhere in the browser
 2. Type your search query in the popup input
 3. Press `Enter` to search
 4. Press the same shortcut again to close the popup
@@ -245,7 +245,7 @@ Use these prefixes to search with specific engines:
 |----------|--------|
 | `Ctrl + Enter` (in URL bar) | Open Quick Search popup |
 | `Ctrl + Shift + Enter` (in URL bar) | Open in Zen Glance Mode |
-| `Alt + Shift + Q` | Global toggle Quick Search popup |
+| `Ctrl + Shift + Q` | Global toggle Quick Search popup |
 | `Escape` | Close Quick Search popup |
 | `Enter` (in search input) | Execute search |
 | `Q` (in context menu) | Access Quick Search from right-click menu |

@@ -68,7 +68,11 @@
     const BEHAVIOR_REMEMBER_SIZE = getPref(BEHAVIOR_REMEMBER_SIZE_PREF, true);
     const BEHAVIOR_AUTO_FOCUS = getPref(BEHAVIOR_AUTO_FOCUS_PREF, true);
     const BEHAVIOR_DRAG_RESIZE_ENABLED = getPref(BEHAVIOR_DRAG_RESIZE_ENABLED_PREF, true);
-    const SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Alt+Shift+Q");
+    let SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Ctrl+Shift+Q");
+    if (SHORTCUTS_TOGGLE_KEY === "Alt+Shift+Q") {
+        SHORTCUTS_TOGGLE_KEY = "Ctrl+Shift+Q";
+        setPref(SHORTCUTS_TOGGLE_KEY_PREF, SHORTCUTS_TOGGLE_KEY);
+    }
     const SHORTCUTS_ESCAPE_CLOSES = getPref(SHORTCUTS_ESCAPE_CLOSES_PREF, true);
 
     // --- End Preference Configuration ---
@@ -828,72 +832,139 @@
         document.addEventListener('keydown', container._escKeyListener);
     }
 
+    function createChromeElement(tagName) {
+        return document.createXULElement
+            ? document.createXULElement(tagName)
+            : document.createElement(tagName);
+    }
+
+    function getChromeRoot() {
+        return (
+            document.body ||
+            document.getElementById("main-window") ||
+            document.documentElement
+        );
+    }
+
+    function parseShortcut(shortcut) {
+        const keyParts = String(shortcut || "").split("+").map(k => k.trim().toLowerCase()).filter(Boolean);
+        const mainKey = keyParts[keyParts.length - 1] || "";
+        return {
+            ctrl: keyParts.includes("ctrl") || keyParts.includes("control") || keyParts.includes("accel"),
+            shift: keyParts.includes("shift"),
+            alt: keyParts.includes("alt"),
+            mainKey,
+        };
+    }
+
+    function shortcutMatches(event, shortcut) {
+        const parsed = parseShortcut(shortcut);
+        return (
+            !!parsed.mainKey &&
+            event.ctrlKey === parsed.ctrl &&
+            event.shiftKey === parsed.shift &&
+            event.altKey === parsed.alt &&
+            event.key.toLowerCase() === parsed.mainKey
+        );
+    }
+
+    function toggleQuickSearchPopup() {
+        const existingContainer = document.getElementById('quicksearch-container');
+        if (existingContainer && existingContainer.classList.contains('visible')) {
+            closeQuickSearch(existingContainer);
+        } else {
+            const container = createSearchContainer();
+            container.classList.add('visible');
+
+            const header = document.getElementById('quicksearch-header');
+            const selectorWrapper = document.getElementById('quicksearch-engine-select-wrapper');
+            const closeButton = container.querySelector('.quicksearch-close-button');
+
+            let searchInput = document.getElementById('quicksearch-input');
+            if (!searchInput && header && selectorWrapper && closeButton) {
+                searchInput = document.createElement('input');
+                searchInput.id = 'quicksearch-input';
+                searchInput.type = 'text';
+                searchInput.placeholder = 'Enter search query...';
+
+                searchInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        const query = this.value.trim();
+                        if (query) {
+                            selectorWrapper.hidden = false;
+                            this.remove();
+                            handleQuickSearch(query);
+                        }
+                    }
+                });
+
+                selectorWrapper.hidden = true;
+                header.insertBefore(searchInput, closeButton);
+            }
+
+            if (BEHAVIOR_AUTO_FOCUS && searchInput) {
+                setTimeout(() => searchInput.focus(), 100);
+            }
+
+            addEscKeyListener(container);
+        }
+    }
+
+    function registerChromeShortcut() {
+        if (
+            document.getElementById("quicksearch-toggle-key") ||
+            document.getElementById("quicksearch-toggle-keyset")
+        ) {
+            return;
+        }
+
+        const parsed = parseShortcut(SHORTCUTS_TOGGLE_KEY);
+        if (!parsed.mainKey) {
+            return;
+        }
+
+        const key = createChromeElement("key");
+        key.id = "quicksearch-toggle-key";
+
+        if (parsed.mainKey === "enter") {
+            key.setAttribute("keycode", "VK_RETURN");
+        } else {
+            key.setAttribute("key", parsed.mainKey.length === 1 ? parsed.mainKey.toUpperCase() : parsed.mainKey);
+        }
+
+        const modifiers = [];
+        if (parsed.ctrl) modifiers.push("accel");
+        if (parsed.shift) modifiers.push("shift");
+        if (parsed.alt) modifiers.push("alt");
+        key.setAttribute("modifiers", modifiers.join(" "));
+        key.addEventListener("command", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleQuickSearchPopup();
+        });
+
+        const mainKeyset = document.getElementById("mainKeyset");
+        if (mainKeyset) {
+            mainKeyset.appendChild(key);
+            return;
+        }
+
+        const keyset = createChromeElement("keyset");
+        keyset.id = "quicksearch-toggle-keyset";
+        keyset.appendChild(key);
+        getChromeRoot().appendChild(keyset);
+    }
+
     // Add keyboard shortcuts
     function addKeyboardShortcuts() {
+        registerChromeShortcut();
+
         function handleGlobalShortcuts(event) {
-            const toggleKey = SHORTCUTS_TOGGLE_KEY;
-            
-            // Parse the toggle key combination
-            const keyParts = toggleKey.split('+').map(k => k.trim());
-            const hasCtrl = keyParts.includes('Ctrl');
-            const hasShift = keyParts.includes('Shift');
-            const hasAlt = keyParts.includes('Alt');
-            const mainKey = keyParts[keyParts.length - 1];
-            
             // Check if the pressed key combination matches the toggle shortcut
-            if (event.ctrlKey === hasCtrl && 
-                event.shiftKey === hasShift && 
-                event.altKey === hasAlt && 
-                event.key.toLowerCase() === mainKey.toLowerCase()) {
-                
+            if (shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
                 event.preventDefault();
                 event.stopPropagation();
-                
-                // Toggle Quick Search
-                const existingContainer = document.getElementById('quicksearch-container');
-                if (existingContainer && existingContainer.classList.contains('visible')) {
-                    closeQuickSearch(existingContainer);
-                } else {
-                    // Create a simple search interface
-                    const container = createSearchContainer();
-                    container.classList.add('visible');
-                    
-                    const header = document.getElementById('quicksearch-header');
-                    const selectorWrapper = document.getElementById('quicksearch-engine-select-wrapper');
-                    const closeButton = container.querySelector('.quicksearch-close-button');
-
-                    // Create a search input if it doesn't exist
-                    let searchInput = document.getElementById('quicksearch-input');
-                    if (!searchInput && header && selectorWrapper && closeButton) {
-                        searchInput = document.createElement('input');
-                        searchInput.id = 'quicksearch-input';
-                        searchInput.type = 'text';
-                        searchInput.placeholder = 'Enter search query...';
-                        
-                        searchInput.addEventListener('keydown', function(e) {
-                            if (e.key === 'Enter') {
-                                const query = this.value.trim();
-                                if (query) {
-                                    // Remove the input, restore selector, and search
-                                    selectorWrapper.hidden = false;
-                                    this.remove();
-                                    handleQuickSearch(query);
-                                }
-                            }
-                        });
-
-                        selectorWrapper.hidden = true;
-                        header.insertBefore(searchInput, closeButton);
-                    }
-                    
-                    // Auto-focus if enabled
-                    const autoFocus = BEHAVIOR_AUTO_FOCUS;
-                    if (autoFocus && searchInput) {
-                        setTimeout(() => searchInput.focus(), 100);
-                    }
-                    
-                    addEscKeyListener(container);
-                }
+                toggleQuickSearchPopup();
             }
         }
         

@@ -134,8 +134,8 @@
     "property": "extensions.quicksearch.shortcuts.toggle_key",
     "label": "Toggle Quick Search Shortcut",
     "type": "string",
-    "placeholder": "e.g., Ctrl+Shift+F",
-    "default": "Alt+Shift+Q",
+    "placeholder": "e.g., Ctrl+Shift+Q",
+    "default": "Ctrl+Shift+Q",
     "description": "Keyboard shortcut to open/close Quick Search"
   },
   {
