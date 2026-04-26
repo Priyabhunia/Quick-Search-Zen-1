@@ -135,7 +135,7 @@
     "label": "Toggle Quick Search Shortcut",
     "type": "string",
     "placeholder": "e.g., Ctrl+Shift+F",
-    "default": "Ctrl+Shift+Q",
+    "default": "Alt+Shift+Q",
     "description": "Keyboard shortcut to open/close Quick Search"
   },
   {

@@ -1,6 +1,8 @@
 (function() {
     'use strict';
 
+    let Services = globalThis.Services;
+
     // --- Preference Configuration (following AI Tab Groups pattern) ---
     
     // Preference Keys
@@ -66,7 +68,7 @@
     const BEHAVIOR_REMEMBER_SIZE = getPref(BEHAVIOR_REMEMBER_SIZE_PREF, true);
     const BEHAVIOR_AUTO_FOCUS = getPref(BEHAVIOR_AUTO_FOCUS_PREF, true);
     const BEHAVIOR_DRAG_RESIZE_ENABLED = getPref(BEHAVIOR_DRAG_RESIZE_ENABLED_PREF, true);
-    const SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Ctrl+Shift+Q");
+    const SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Alt+Shift+Q");
     const SHORTCUTS_ESCAPE_CLOSES = getPref(SHORTCUTS_ESCAPE_CLOSES_PREF, true);
 
     // --- End Preference Configuration ---
@@ -85,10 +87,10 @@
       const thirdFallback = 'chrome://branding/content/icon32.png'
       engine.getIconURL().then(url=>{
         img.src = url || googleFaviconAPI(engine.getSubmission("test").uri.spec) || thirdFallback
-      }).catch( 
+      }).catch(() => {
         // fallback to google faviconAPI in case of error
-        img.src = googleFaviconAPI(engine.getSubmission("test").uri.spec) || thirdFallback 
-      )
+        img.src = googleFaviconAPI(engine.getSubmission("test").uri.spec) || thirdFallback
+      })
       img.alt = engine.name;
       return img
     }
@@ -402,33 +404,50 @@
 
     // Function to ensure Services are available
     function ensureServicesAvailable() {
-        if (typeof Services === 'undefined' && typeof Components !== 'undefined') {
-            try {
-                Components.utils.import("resource://gre/modules/Services.jsm");
-                return true;
-            } catch (e) {
-                return false;
-            }
+        if (Services) {
+            return true;
         }
-        return typeof Services !== 'undefined';
+
+        try {
+            if (typeof ChromeUtils !== 'undefined' && ChromeUtils.importESModule) {
+                Services = ChromeUtils.importESModule("resource://gre/modules/Services.sys.mjs").Services;
+                return true;
+            }
+        } catch (e) {
+        }
+
+        try {
+            if (typeof Components !== 'undefined' && Components.utils && Components.utils.import) {
+                Services = Components.utils.import("resource://gre/modules/Services.jsm").Services;
+                return true;
+            }
+        } catch (e) {
+        }
+
+        return false;
     }
 
     // Function to load content in browser
     function loadContentInBrowser(browser, searchUrl) {
         try {
-            try {
-                const uri = Services.io.newURI(searchUrl);
-                const principal = Services.scriptSecurityManager.getSystemPrincipal();
-                browser.loadURI(uri, {triggeringPrincipal: principal});
-            } catch (e) {
-                browser.loadURI(searchUrl);
+            const principal = Services.scriptSecurityManager.getSystemPrincipal();
+            // Try modern API first (Firefox 112+)
+            if (typeof browser.fixupAndLoadURIString === 'function') {
+                browser.fixupAndLoadURIString(searchUrl, {triggeringPrincipal: principal});
+            } else {
+                try {
+                    const uri = Services.io.newURI(searchUrl);
+                    browser.loadURI(uri, {triggeringPrincipal: principal});
+                } catch (e) {
+                    browser.loadURI(searchUrl, {triggeringPrincipal: principal});
+                }
             }
             return true;
         } catch (e) {
             try {
                 browser.setAttribute("src", searchUrl);
                 return true;
-            } catch (e) {
+            } catch (e2) {
                 return false;
             }
         }
@@ -484,37 +503,45 @@
         }
     }
 
-    // Wait for browser to be fully initialized
     function init() {
         if (!ensureServicesAvailable()) return;
-        
-        // Inject CSS with user preferences
-        injectCSS(CONTAINER_THEME, CONTAINER_POSITION, BEHAVIOR_ANIMATION_ENABLED);
-        
-        let urlbar = null;
-        if (gBrowser && gBrowser.urlbar) {
-            urlbar = gBrowser.urlbar;
-        } else {
-            urlbar = document.getElementById("urlbar") || document.querySelector("#urlbar");
-        }
-        
-        if (urlbar) {
-            attachEventListeners(urlbar);
-        } else {
-            setTimeout(init, 1000);
-        }
-        
-        // Add context menu item if enabled
-        if (CONTEXT_MENU_ENABLED) {
-            addContextMenuItem();
+
+        try {
+            injectCSS(CONTAINER_THEME, CONTAINER_POSITION, BEHAVIOR_ANIMATION_ENABLED);
+        } catch (e) {
+            console.error("QuickSearch: failed to inject CSS", e);
         }
 
-        // Add keyboard shortcut listener
+        try {
+            const urlbarInput =
+                (typeof gURLBar !== "undefined" && gURLBar && (gURLBar.inputField || gURLBar.textbox || gURLBar.inputElement || gURLBar)) ||
+                document.getElementById("urlbar-input") ||
+                document.querySelector("#urlbar-input") ||
+                document.getElementById("urlbar") ||
+                document.querySelector("#urlbar");
+
+            if (urlbarInput) {
+                attachEventListeners(urlbarInput);
+            }
+        } catch (e) {
+            console.error("QuickSearch: failed to attach urlbar listeners", e);
+        }
+
         addKeyboardShortcuts();
+
+        if (CONTEXT_MENU_ENABLED) {
+            try {
+                addContextMenuItem();
+            } catch (e) {
+                console.error("QuickSearch: failed to attach context menu", e);
+            }
+        }
     }
     
     // Attach event listeners to the URL bar
     function attachEventListeners(urlbar) {
+        if (!urlbar) return;
+        
         let currentQuery = '';
         
         // Input event to track typing
@@ -537,6 +564,9 @@
                         if (typeof currentQuery === 'string' && currentQuery.length > 0) {
                             query = currentQuery.trim();
                         }
+                        if (!query && event.target && typeof event.target.value === 'string') {
+                            query = event.target.value.trim();
+                        }
                     } catch (error) {
                         return;
                     }
@@ -556,12 +586,21 @@
                         if (typeof currentQuery === 'string' && currentQuery.length > 0) {
                             query = currentQuery.trim();
                         }
+                        if (!query && event.target && typeof event.target.value === 'string') {
+                            query = event.target.value.trim();
+                        }
                     } catch (error) {
                         return;
                     }
                     
                     if (query) {
-                        let engineName = document.getElementById("urlbar-search-mode-indicator-title").innerText.trim();
+                        let engineName = '';
+                        try {
+                            const indicatorEl = document.getElementById("urlbar-search-mode-indicator-title");
+                            engineName = indicatorEl ? indicatorEl.innerText.trim() : '';
+                        } catch (error) {
+                            engineName = '';
+                        }
                         handleQuickSearch(query, engineName);
                     }
                     
@@ -571,28 +610,39 @@
         }, true);
         
         // Update the tooltip to include Glance mode information
-        let urlbarTooltip = "Quick Search Normal: Type a query and press Ctrl+Enter\n" +
-                            "Quick Search Glance: Type a query and press Ctrl+Shift+Enter\n" +
-                            "Prefixes: ";
+        try {
+            let urlbarTooltip = "Quick Search Normal: Type a query and press Ctrl+Enter\n" +
+                                "Quick Search Glance: Type a query and press Ctrl+Shift+Enter\n" +
+                                "Prefixes: ";
 
-        Services.search.getEngines().then(engines => {
-            engines.forEach(engine => {
-                if (engine._definedAliases && engine._definedAliases.length > 0) {
-                    urlbarTooltip += engine._definedAliases[0] + " (" + engine.name + "), ";
+            Services.search.getEngines().then(engines => {
+                engines.forEach(engine => {
+                    const aliases = engine.aliases || engine._definedAliases;
+                    if (aliases && aliases.length > 0) {
+                        urlbarTooltip += aliases[0] + " (" + engine.name + "), ";
+                    }
+                });
+                urlbarTooltip = urlbarTooltip.slice(0, -2);
+                try {
+                    urlbar.setAttribute("tooltip", urlbarTooltip);
+                    urlbar.setAttribute("title", urlbarTooltip);
+                } catch (error) {
+                    // Non-critical if tooltip fails
                 }
             });
-            urlbarTooltip = urlbarTooltip.slice(0, -2);
-            try {
-                urlbar.setAttribute("tooltip", urlbarTooltip);
-                urlbar.setAttribute("title", urlbarTooltip);
-            } catch (error) {
-                // Non-critical if tooltip fails
-            }
-        });
+        } catch (e) {
+            // Non-critical if tooltip setup fails
+        }
     }
 
       async function getSearchURLFromInput(input) {
-          let engineName = document.getElementById("urlbar-search-mode-indicator-title").innerText.trim();
+          let engineName = '';
+          try {
+              const indicatorEl = document.getElementById("urlbar-search-mode-indicator-title");
+              engineName = indicatorEl ? indicatorEl.innerText.trim() : '';
+          } catch (error) {
+              engineName = '';
+          }
           let engines = await Services.search.getEngines();
           let engine = engines.find(e => e.name === engineName);
           if (!engine) engine = await Services.search.getDefault();
@@ -604,7 +654,8 @@
     // Function to get search URL with a specific engine
     async function getSearchURLWithEngine(query, engineName) {
         let engines = await Services.search.getEngines();
-        let engine = engines.find(e => e.name === engineName || (e._definedAliases && e._definedAliases.includes(engineName)));
+        const getAliases = (e) => e.aliases || e._definedAliases || [];
+        let engine = engines.find(e => e.name === engineName || getAliases(e).includes(engineName));
 
         if (!engine) engine = currentSearchEngine || await Services.search.getDefault();
         currentSearchEngine = engine
@@ -1166,7 +1217,8 @@
             container.appendChild(resizer);
         }
         
-        document.body.appendChild(container);
+        // document.body is null in Firefox/Zen XUL chrome context; fall back safely
+        (document.body || document.getElementById("main-window") || document.documentElement).appendChild(container);
 
         // Apply initial position based on preference for container and resizer
         applyContainerPosition( CONTAINER_POSITION);
@@ -1246,6 +1298,16 @@
             browser.setAttribute("disablehistory", "true");
             browser.setAttribute("flex", "1");
             browser.setAttribute("noautohide", "true");
+            browser.setAttribute("nodefaultsrc", "true");
+            
+            // Required in modern Firefox/Zen to properly initialize the remote content process.
+            // Without this, loadURI/fixupAndLoadURIString fails silently on the browser element.
+            try {
+                const groupId = gBrowser.selectedBrowser.browsingContext.group.id;
+                browser.setAttribute("initialBrowsingContextGroupId", groupId);
+            } catch (e) {
+                // gBrowser may not be available; browser element will still be attempted
+            }
             
             return browser;
         } catch (e) {
@@ -1254,6 +1316,7 @@
                 
                 browser.setAttribute("type", "content");
                 browser.setAttribute("remote", "true");
+                browser.setAttribute("nodefaultsrc", "true");
                 
                 return browser;
             } catch (e) {
@@ -1275,7 +1338,9 @@
         }
 
         const accessKey = CONTEXT_MENU_ACCESS_KEY;
-        const menuItem = document.createXULElement("menuitem");
+        const menuItem = document.createXULElement ?
+            document.createXULElement("menuitem") :
+            document.createElement("menuitem");
         menuItem.id = "quicksearch-context-menuitem";
         menuItem.setAttribute("label", "Open in Quick Search");
         menuItem.setAttribute("accesskey", accessKey);
@@ -1317,7 +1382,7 @@
         if (typeof gContextMenu !== 'undefined' && gContextMenu.selectedText) {
             selectedText = gContextMenu.selectedText.trim();
         } else {
-            console.error("Error getting selected text:", e);
+            console.warn("QuickSearch: No selected text available from context menu");
         }
         
         if (selectedText && selectedText.trim()) {

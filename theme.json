@@ -1,19 +1,24 @@
 {
-    "id": "quick-search-zen-browser",
+    "id": "Quick-Search-Zen-1",
     "name": "Quick Search",
     "description": "This is a quick search script for zen browser. Allows an user to quickly search a query in a small pop up container thus removing the need to swtich to a whole different tab ",
-    "homepage": "https://github.com/Darsh-A/Quick-Search-Zen-Browser",
-    "preferences": "https://raw.githubusercontent.com/Darsh-A/Quick-Search-Zen-Browser/main/preferences.json",
+    "homepage": "https://github.com/Priyabhunia/Quick-Search-Zen-1",
+    "preferences": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/main/preferences.json",
     "scripts": {
         "quickSearch.uc.js": {
             "include": [
                 "chrome://browser/content/browser.xhtml"
             ]
+        },
+        "quickSearch_NoBar.uc.js": {
+            "include": [
+                "chrome://browser/content/browser.xhtml"
+            ]
         }
     },
-    "readme": "https://raw.githubusercontent.com/Darsh-A/Quick-Search-Zen-Browser/refs/heads/main/README.md",
+    "readme": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/refs/heads/main/README.md",
     "author": "Darsh A",
-    "version": "2.2.0",
+    "version": "1.0.0",
     "tags": [
         "sine",
         "Quick Search",
