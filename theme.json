@@ -1,7 +1,7 @@
 {
     "id": "Quick-Search-Zen-1",
-    "name": "Quick Search",
-    "description": "This is a quick search script for zen browser. Allows an user to quickly search a query in a small pop up container thus removing the need to swtich to a whole different tab ",
+    "name": "Quick Search Zen",
+    "description": "Search in a small pop-up container in the current tab, with no need to switch to a new tab. Fork of Quick Search carrying a fix for the popup never appearing on Zen 1.23+ / Gecko 158.",
     "homepage": "https://github.com/Priyabhunia/Quick-Search-Zen-1",
     "preferences": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/main/preferences.json",
     "scripts": {
@@ -12,14 +12,16 @@
         }
     },
     "readme": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/refs/heads/main/README.md",
-    "author": "Darsh A",
+    "author": "Priyabhunia",
     "version": "1.0.1",
     "tags": [
         "sine",
         "Quick Search",
+        "search",
+        "popup",
         "fx-autoconfig",
         "JavaScript",
-        "Darsh A"
+        "Priyabhunia"
     ],
     "createdAt": "2025-05-26",
     "updatedAt": "2026-10-25",
