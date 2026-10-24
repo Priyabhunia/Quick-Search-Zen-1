@@ -1,7 +1,7 @@
 # ⭐ Quick Search - Zen Browser ⭐
 Script to quickly search for a word or phrase in the Zen Browser through a pop up thus removing the need to create and swtich to a new tab.
 
-## Search Popup
+## Search Popup[I fixed this for myself only There is no chance that I can maintain this, so if you want to edit just fork it and do it yourself]
 
 https://github.com/user-attachments/assets/95702ac2-96bf-478e-8e47-0afa4916c1c2
 
