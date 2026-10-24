@@ -49,12 +49,41 @@ https://github.com/user-attachments/assets/827215fc-e985-4f71-8646-6e3a6b7e624b
 
 ## 🔧 Installation
 
-## Method 1:
-***Through [Sine](https://github.com/CosmoCreeper/Sine)***
-You can setup script configurations through Sine Settings
+### Method 1: Through [Sine](https://github.com/CosmoCreeper/Sine) — recommended
 
-## Method 2:
-## Part 1: Install fx-autoconfig
+Sine is the mod manager for Zen. If you don't have it yet, install it first by
+following [Sine's install instructions](https://github.com/CosmoCreeper/Sine),
+then restart Zen.
+
+1. **Allow JS mods** — Open Zen Settings (`about:preferences`) and click
+   **Sine Mods** in the left sidebar, then open Sine's **Settings** (gear icon).
+   Turn on **"Enable installing JS from unofficial sources"**.
+
+   > This mod ships a `.uc.js` script. Without this toggle Sine accepts the
+   > install but silently never loads the script, and nothing happens when you
+   > press the shortcut.
+
+2. **Install the mod** — In the same **Sine Mods** pane, find the **Install**
+   box, type this repo and click **Install**:
+
+   ```
+   Priyabhunia/Quick-Search-Zen-1
+   ```
+
+3. **Restart Zen.** Mods are loaded when a browser window is created, so the
+   shortcut will not work until you restart.
+
+4. **Use it** — press `Ctrl + Space` anywhere in the browser.
+
+If `Ctrl + Space` does nothing, something else on your system has claimed it
+(a common case is an IME input-mode toggle). Change it to any other combination
+in Sine's mod settings or in `about:config`, then restart Zen:
+
+```
+extensions.quicksearch.shortcuts.toggle_key
+```
+
+### Method 2: Manual install (advanced)
 
 1. **Download the Files**
    - Go to the [fx-autoconfig GitHub page](https://github.com/MrOtherGuy/fx-autoconfig/tree/master).
@@ -89,13 +118,13 @@ You can setup script configurations through Sine Settings
    - Copy the `chrome` folder into the profile's root directory.
 
 
-## Part 2: Install Quick Search
+#### Then: install Quick Search itself
 
 1. **Open the Required Folder**
    - From your profile root folder, navigate to `chrome > JS`.
 
 2. **Download the Quick Search Plugin**
-   - Go to the [Quick Search GitHub page](https://github.com/Darsh-A/Quick-Search-Zen-Browser/tree/main).
+   - Go to the [Quick Search GitHub page](https://github.com/Priyabhunia/Quick-Search-Zen-1/tree/main).
    - Click the green `< > Code` button and download the ZIP file.
 
 3. **Check Configuration in Zen Browser**
@@ -147,8 +176,6 @@ All preferences are located under the `extensions.quicksearch.*` branch in `abou
   - Visual theme: "dark", "light", "auto" (follows system theme)
 
 #### **Behavior Settings**
-- `extensions.quicksearch.behavior.scale_factor` (float, default: 0.95)
-  - Content scale factor for displayed content (0.1-2.0)
 - `extensions.quicksearch.behavior.animation_enabled` (boolean, default: true)
   - Enable/disable slide-in/slide-out animations
 - `extensions.quicksearch.behavior.remember_size` (boolean, default: true)
@@ -159,8 +186,8 @@ All preferences are located under the `extensions.quicksearch.*` branch in `abou
   - Automatically focus search input when Quick Search opens
 
 #### **Keyboard Shortcuts**
-- `extensions.quicksearch.shortcuts.toggle_key` (string, default: "Ctrl+Shift+Q")
-  - Global keyboard shortcut to toggle Quick Search (supports Ctrl+Shift+Alt combinations)
+- `extensions.quicksearch.shortcuts.toggle_key` (string, default: "Ctrl+Space")
+  - Global keyboard shortcut to toggle Quick Search (supports Ctrl+Shift+Alt combinations, and named keys such as `Space`, `Enter`, `Escape`)
 - `extensions.quicksearch.shortcuts.escape_closes` (boolean, default: true)
   - Allow Escape key to close the Quick Search container
 
@@ -220,7 +247,7 @@ Quick Search supports multiple ways to perform searches and uses your browser's 
 3. Press `Enter` to search
 
 #### **Global Keyboard Shortcut** (New Feature):
-1. Press `Ctrl + Shift + Q` (or your configured shortcut) anywhere in the browser
+1. Press `Ctrl + Space` (or your configured shortcut) anywhere in the browser
 2. Type your search query in the popup input
 3. Press `Enter` to search
 4. Press the same shortcut again to close the popup
@@ -245,7 +272,7 @@ Use these prefixes to search with specific engines:
 |----------|--------|
 | `Ctrl + Enter` (in URL bar) | Open Quick Search popup |
 | `Ctrl + Shift + Enter` (in URL bar) | Open in Zen Glance Mode |
-| `Ctrl + Shift + Q` | Global toggle Quick Search popup |
+| `Ctrl + Space` | Global toggle Quick Search popup |
 | `Escape` | Close Quick Search popup |
 | `Enter` (in search input) | Execute search |
 | `Q` (in context menu) | Access Quick Search from right-click menu |
