@@ -5,7 +5,7 @@
     "homepage": "https://github.com/Priyabhunia/Quick-Search-Zen-1",
     "preferences": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/main/preferences.json",
     "scripts": {
-        "quickSearch_NoBar.uc.js": {
+        "quickSearch.uc.js": {
             "include": [
                 "chrome://browser/content/browser.xhtml"
             ]
@@ -13,7 +13,7 @@
     },
     "readme": "https://raw.githubusercontent.com/Priyabhunia/Quick-Search-Zen-1/refs/heads/main/README.md",
     "author": "Darsh A",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "tags": [
         "sine",
         "Quick Search",
@@ -22,6 +22,6 @@
         "Darsh A"
     ],
     "createdAt": "2025-05-26",
-    "updatedAt": "2025-6-24",
+    "updatedAt": "2026-10-25",
     "fork": ["zen"]
 }

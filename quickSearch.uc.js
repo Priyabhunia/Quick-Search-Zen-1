@@ -3,6 +3,35 @@
 
     let Services = globalThis.Services;
 
+    // --- Search service access ---
+    // Gecko 158 (Zen 1.23+) removed the `Services.search` accessor. The search
+    // service is now an ES-module singleton exported from SearchService.sys.mjs,
+    // so `Services.search` is undefined and every `SearchSvc.x()` call
+    // threw a TypeError before the popup container was ever built.
+    // Resolve it once, preferring the live platform service, and fall back to
+    // the module singleton so this keeps working on both old and new Gecko.
+    const SearchSvc = (() => {
+        if (Services.search) {
+            return Services.search;
+        }
+        const modulePaths = [
+            "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+            "resource://gre/modules/SearchService.sys.mjs"
+        ];
+        for (const modulePath of modulePaths) {
+            try {
+                const mod = ChromeUtils.importESModule(modulePath);
+                if (mod.SearchService) {
+                    return mod.SearchService;
+                }
+            } catch (e) {
+                // Not available at this path; try the next one.
+            }
+        }
+        console.error("[Quick Search] Could not resolve the search service.");
+        return null;
+    })();
+
     // --- Preference Configuration (following AI Tab Groups pattern) ---
     
     // Preference Keys
@@ -68,7 +97,7 @@
     const BEHAVIOR_REMEMBER_SIZE = getPref(BEHAVIOR_REMEMBER_SIZE_PREF, true);
     const BEHAVIOR_AUTO_FOCUS = getPref(BEHAVIOR_AUTO_FOCUS_PREF, true);
     const BEHAVIOR_DRAG_RESIZE_ENABLED = getPref(BEHAVIOR_DRAG_RESIZE_ENABLED_PREF, true);
-    let SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Ctrl+Shift+Q");
+    let SHORTCUTS_TOGGLE_KEY = getPref(SHORTCUTS_TOGGLE_KEY_PREF, "Ctrl+Space");
     if (SHORTCUTS_TOGGLE_KEY === "Alt+Shift+Q") {
         SHORTCUTS_TOGGLE_KEY = "Ctrl+Shift+Q";
         setPref(SHORTCUTS_TOGGLE_KEY_PREF, SHORTCUTS_TOGGLE_KEY);
@@ -619,7 +648,7 @@
                                 "Quick Search Glance: Type a query and press Ctrl+Shift+Enter\n" +
                                 "Prefixes: ";
 
-            Services.search.getEngines().then(engines => {
+            SearchSvc.getEngines().then(engines => {
                 engines.forEach(engine => {
                     const aliases = engine.aliases || engine._definedAliases;
                     if (aliases && aliases.length > 0) {
@@ -647,9 +676,9 @@
           } catch (error) {
               engineName = '';
           }
-          let engines = await Services.search.getEngines();
+          let engines = await SearchSvc.getEngines();
           let engine = engines.find(e => e.name === engineName);
-          if (!engine) engine = await Services.search.getDefault();
+          if (!engine) engine = await SearchSvc.getDefault();
           let searchTerm = input.trim();
           let submission = engine.getSubmission(searchTerm);
           return submission.uri.spec;
@@ -657,11 +686,11 @@
 
     // Function to get search URL with a specific engine
     async function getSearchURLWithEngine(query, engineName) {
-        let engines = await Services.search.getEngines();
+        let engines = await SearchSvc.getEngines();
         const getAliases = (e) => e.aliases || e._definedAliases || [];
         let engine = engines.find(e => e.name === engineName || getAliases(e).includes(engineName));
 
-        if (!engine) engine = currentSearchEngine || await Services.search.getDefault();
+        if (!engine) engine = currentSearchEngine || await SearchSvc.getDefault();
         currentSearchEngine = engine
 
         let searchTerm = query.trim();
@@ -681,16 +710,16 @@
         getSearchURLFromInput(query).then(searchUrl => {
             try {
                 if (window.gZenGlanceManager) {
-                    const browserRect = document.documentElement.getBoundingClientRect();
-                    const centerX = browserRect.width / 2;
-                    const centerY = browserRect.height / 2;
-
+                    // Zen's openGlance() rejects any URL without a
+                    // triggeringPrincipal (see nsZenGlanceManager#isGlanceLoadAllowed),
+                    // so it must be supplied or Glance silently does nothing.
+                    // x/y/width/height are intentionally omitted: when they are
+                    // absent Zen falls back to its own lastLinkClickData, whereas
+                    // passing a synthetic 10x10 rect forces the "element preview"
+                    // animation around a point that does not exist.
                     const data = {
                         url: searchUrl,
-                        x: centerX,
-                        y: centerY,
-                        width: 10,
-                        height: 10
+                        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
                     };
 
                     window.gZenGlanceManager.openGlance(data);
@@ -798,16 +827,32 @@
     }
 
     function closeUrlBar(urlbar) {
-        if (!urlbar) return;
-        
+        // Dismiss the URL bar the way Firefox/Zen does. Zen used to expose
+        // gZenUIManager.handleUrlbarClose(), which no longer exists (current Zen
+        // has gZenUIManager.onUrlbarClose(), and that only restores the page-proxy
+        // state -- it does not actually close anything). So drive gURLBar directly.
         try {
-            if (window.gZenUIManager && typeof window.gZenUIManager.handleUrlbarClose === 'function') {
-                window.gZenUIManager.handleUrlbarClose(false, false);
-                return;
+            if (window.gURLBar) {
+                try {
+                    gURLBar.view?.close();
+                } catch (e) {
+                }
+                try {
+                    gURLBar.blur();
+                } catch (e) {
+                }
             }
-            
-            // Reset selection
-            urlbar.selectionStart = urlbar.selectionEnd = 0;
+
+            // Reset selection on whatever element we were handed.
+            if (urlbar) {
+                urlbar.selectionStart = urlbar.selectionEnd = 0;
+            }
+
+            // Hand focus back to the page so the popup can take it.
+            try {
+                gBrowser.selectedBrowser.focus();
+            } catch (e) {
+            }
         } catch (e) {
         }
     }
@@ -846,9 +891,30 @@
         );
     }
 
+    // Key names as written in the preference do not always match what the DOM
+    // reports for that key: the spacebar arrives as " " rather than "space",
+    // and "Esc" as "escape". Fold both sides onto one spelling so a preference
+    // like "Ctrl+Space" works. XUL <key> elements need their own handling,
+    // since they take a keycode rather than a character for these.
+    const KEY_ALIASES = {
+        space: " ",
+        spacebar: " ",
+        esc: "escape",
+        return: "enter",
+        del: "delete",
+        ins: "insert",
+        pgup: "pageup",
+        pgdn: "pagedown",
+    };
+
+    const normalizeKey = (key) => {
+        const lower = String(key || "").toLowerCase();
+        return KEY_ALIASES[lower] || lower;
+    };
+
     function parseShortcut(shortcut) {
         const keyParts = String(shortcut || "").split("+").map(k => k.trim().toLowerCase()).filter(Boolean);
-        const mainKey = keyParts[keyParts.length - 1] || "";
+        const mainKey = normalizeKey(keyParts[keyParts.length - 1] || "");
         return {
             ctrl: keyParts.includes("ctrl") || keyParts.includes("control") || keyParts.includes("accel"),
             shift: keyParts.includes("shift"),
@@ -864,7 +930,7 @@
             event.ctrlKey === parsed.ctrl &&
             event.shiftKey === parsed.shift &&
             event.altKey === parsed.alt &&
-            event.key.toLowerCase() === parsed.mainKey
+            normalizeKey(event.key) === parsed.mainKey
         );
     }
 
@@ -926,8 +992,22 @@
         const key = createChromeElement("key");
         key.id = "quicksearch-toggle-key";
 
-        if (parsed.mainKey === "enter") {
-            key.setAttribute("keycode", "VK_RETURN");
+        // Keys that are not a printable character have no valid `key` value on a
+        // XUL <key>; they are addressed by keycode instead.
+        const KEYCODES = {
+            enter: "VK_RETURN",
+            " ": "VK_SPACE",
+            tab: "VK_TAB",
+            backspace: "VK_BACK",
+            escape: "VK_ESCAPE",
+            arrowup: "VK_UP",
+            arrowdown: "VK_DOWN",
+            arrowleft: "VK_LEFT",
+            arrowright: "VK_RIGHT",
+        };
+
+        if (KEYCODES[parsed.mainKey]) {
+            key.setAttribute("keycode", KEYCODES[parsed.mainKey]);
         } else {
             key.setAttribute("key", parsed.mainKey.length === 1 ? parsed.mainKey.toUpperCase() : parsed.mainKey);
         }
@@ -1174,7 +1254,8 @@
           quicksearchOptions.style.display = 'none';
         });
 
-        Services.search.getEngines().then(engines => {
+        // Engine list is a nicety; the container still works without it.
+        if (SearchSvc) SearchSvc.getEngines().then(engines => {
             quicksearchOptions.innerHTML = '';
             engines.forEach(engine => {
                 const option = document.createElement('div');
@@ -1198,7 +1279,7 @@
                 quicksearchOptions.appendChild(option);
             });
 
-            return Services.search.getDefault();
+            return SearchSvc.getDefault();
         }).then(defaultEngine => {
             if (!currentSearchEngine) {
                 currentSearchEngine = defaultEngine;
@@ -1289,7 +1370,8 @@
         }
         
         // document.body is null in Firefox/Zen XUL chrome context; fall back safely
-        (document.body || document.getElementById("main-window") || document.documentElement).appendChild(container);
+        const host = document.body || document.getElementById("main-window") || document.documentElement;
+        host.appendChild(container);
 
         // Apply initial position based on preference for container and resizer
         applyContainerPosition( CONTAINER_POSITION);

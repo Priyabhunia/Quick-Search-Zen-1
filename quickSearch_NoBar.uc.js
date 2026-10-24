@@ -3,6 +3,35 @@
 
   let Services = globalThis.Services;
 
+  // --- Search service access ---
+  // Gecko 158 (Zen 1.23+) removed the `Services.search` accessor. The search
+  // service is now an ES-module singleton exported from SearchService.sys.mjs,
+  // so `Services.search` is undefined and every `SearchSvc.x()` call
+  // threw a TypeError before the popup container was ever built.
+  // Resolve it once, preferring the live platform service, and fall back to
+  // the module singleton so this keeps working on both old and new Gecko.
+  const SearchSvc = (() => {
+    if (Services.search) {
+      return Services.search;
+    }
+    const modulePaths = [
+      "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+      "resource://gre/modules/SearchService.sys.mjs",
+    ];
+    for (const modulePath of modulePaths) {
+      try {
+        const mod = ChromeUtils.importESModule(modulePath);
+        if (mod.SearchService) {
+          return mod.SearchService;
+        }
+      } catch (e) {
+        // Not available at this path; try the next one.
+      }
+    }
+    console.error("[Quick Search] Could not resolve the search service.");
+    return null;
+  })();
+
   // --- Preference Configuration (following AI Tab Groups pattern) ---
 
   // Preference Keys
@@ -89,7 +118,7 @@
   );
   let SHORTCUTS_TOGGLE_KEY = getPref(
     SHORTCUTS_TOGGLE_KEY_PREF,
-    "Ctrl+Shift+Q",
+    "Ctrl+Space",
   );
   if (SHORTCUTS_TOGGLE_KEY === "Alt+Shift+Q") {
     SHORTCUTS_TOGGLE_KEY = "Ctrl+Shift+Q";
@@ -453,7 +482,7 @@
               display: none;
             }
 
-            #quicksearch-engine-option {
+            .quicksearch-engine-option {
               padding: 6px 10px;
               display: flex;
               align-items: center;
@@ -461,7 +490,7 @@
               gap: 8px;
             }
 
-            #quicksearch-engine-option:hover {
+            .quicksearch-engine-option:hover {
               background-color: #333;
             }
 
@@ -470,8 +499,6 @@
               width: 16px;
               height: 16px;
             }
-
-            .z-index: 10000;
         `;
 
     const styleElement = document.createElement("style");
@@ -623,12 +650,33 @@
     );
   }
 
+  // Key names as written in the preference do not always match what the DOM
+  // reports for that key: the spacebar arrives as " " rather than "space",
+  // and "Esc" as "escape". Fold both sides onto one spelling so a preference
+  // like "Ctrl+Space" works. XUL <key> elements need their own handling,
+  // since they take a keycode rather than a character for these.
+  const KEY_ALIASES = {
+    space: " ",
+    spacebar: " ",
+    esc: "escape",
+    return: "enter",
+    del: "delete",
+    ins: "insert",
+    pgup: "pageup",
+    pgdn: "pagedown",
+  };
+
+  const normalizeKey = (key) => {
+    const lower = String(key || "").toLowerCase();
+    return KEY_ALIASES[lower] || lower;
+  };
+
   function parseShortcut(shortcut) {
     const keyParts = String(shortcut || "")
       .split("+")
       .map((k) => k.trim().toLowerCase())
       .filter(Boolean);
-    const mainKey = keyParts[keyParts.length - 1] || "";
+    const mainKey = normalizeKey(keyParts[keyParts.length - 1] || "");
     return {
       ctrl:
         keyParts.includes("ctrl") ||
@@ -647,7 +695,7 @@
       event.shiftKey === parsed.shift &&
       event.altKey === parsed.alt &&
       !!parsed.mainKey &&
-      event.key.toLowerCase() === parsed.mainKey
+      normalizeKey(event.key) === parsed.mainKey
     );
   }
 
@@ -676,8 +724,22 @@
     const key = createChromeElement("key");
     key.id = "quicksearch-toggle-key";
 
-    if (parsed.mainKey === "enter") {
-      key.setAttribute("keycode", "VK_RETURN");
+    // Keys that are not a printable character have no valid `key` value on a
+    // XUL <key>; they are addressed by keycode instead.
+    const KEYCODES = {
+      enter: "VK_RETURN",
+      " ": "VK_SPACE",
+      tab: "VK_TAB",
+      backspace: "VK_BACK",
+      escape: "VK_ESCAPE",
+      arrowup: "VK_UP",
+      arrowdown: "VK_DOWN",
+      arrowleft: "VK_LEFT",
+      arrowright: "VK_RIGHT",
+    };
+
+    if (KEYCODES[parsed.mainKey]) {
+      key.setAttribute("keycode", KEYCODES[parsed.mainKey]);
     } else {
       key.setAttribute(
         "key",
@@ -1074,12 +1136,13 @@
       quicksearchOptions.style.display = "none";
     });
 
-    Services.search
+    // Engine list is a nicety; the container still works without it.
+    if (SearchSvc) SearchSvc
       .getEngines()
       .then((engines) => {
         engines.forEach((engine) => {
           const option = document.createElement("div");
-          option.id = "quicksearch-engine-option";
+          option.className = "quicksearch-engine-option";
 
           const img = getFaviconImg(engine);
 
@@ -1101,7 +1164,7 @@
           quicksearchOptions.appendChild(option);
         });
 
-        return Services.search.getDefault();
+        return SearchSvc.getDefault();
       })
       .then((defaultEngine) => {
         currentSearchEngine = defaultEngine;
@@ -1327,7 +1390,7 @@
   }
 
   function getSearchURLFromInput(input) {
-    return Services.search.getEngines().then((engines) => {
+    return SearchSvc.getEngines().then((engines) => {
       let [prefix, ...rest] = input.trim().split(/\s+/);
       let searchTerm = rest.join(" ");
 
@@ -1338,9 +1401,9 @@
 
       // If no alias matched, fallback to selected engine
       if (!engine) {
-        engine = currentSearchEngine || Services.search.defaultEngine;
-        if (!engine && Services.search.getDefault) {
-          return Services.search.getDefault().then((defaultEngine) => {
+        engine = currentSearchEngine || SearchSvc.defaultEngine;
+        if (!engine && SearchSvc.getDefault) {
+          return SearchSvc.getDefault().then((defaultEngine) => {
             currentSearchEngine = defaultEngine;
             currentSearchTerm = input;
             return defaultEngine.getSubmission(input).uri.spec;
@@ -1359,13 +1422,13 @@
 
   // Function to get search URL with a specific engine
   async function getSearchURLWithEngine(query, engineName) {
-    let engines = await Services.search.getEngines();
+    let engines = await SearchSvc.getEngines();
     let engine = engines.find(
       (e) =>
         e.name === engineName ||
         (e.aliases || e._definedAliases || []).includes(engineName),
     );
-    if (!engine) engine = await Services.search.getDefault();
+    if (!engine) engine = await SearchSvc.getDefault();
     let searchTerm = query.trim();
     currentSearchEngine = engine;
 
