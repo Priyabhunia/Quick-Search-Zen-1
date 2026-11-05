@@ -642,19 +642,10 @@
       : document.createElement(tagName);
   }
 
-  function getChromeRoot() {
-    return (
-      document.body ||
-      document.getElementById("main-window") ||
-      document.documentElement
-    );
-  }
-
   // Key names as written in the preference do not always match what the DOM
   // reports for that key: the spacebar arrives as " " rather than "space",
-  // and "Esc" as "escape". Fold both sides onto one spelling so a preference
-  // like "Ctrl+Space" works. XUL <key> elements need their own handling,
-  // since they take a keycode rather than a character for these.
+  // and "Esc" as "escape". Fold both sides onto one spelling so preferences
+  // like "Ctrl+Space" work consistently.
   const KEY_ALIASES = {
     space: " ",
     spacebar: " ",
@@ -690,13 +681,100 @@
 
   function shortcutMatches(event, shortcut) {
     const parsed = parseShortcut(shortcut);
+    const eventKey = normalizeKey(event.key);
+    const isSpace = parsed.mainKey === " " && event.code === "Space";
     return (
       event.ctrlKey === parsed.ctrl &&
       event.shiftKey === parsed.shift &&
       event.altKey === parsed.alt &&
       !!parsed.mainKey &&
-      normalizeKey(event.key) === parsed.mainKey
+      (eventKey === parsed.mainKey || isSpace)
     );
+  }
+
+  function installContentShortcutListener() {
+    const marker = "__quickSearchContentShortcutListener";
+    if (window[marker]) return;
+
+    const messageManager = window.messageManager;
+    if (!messageManager || typeof messageManager.loadFrameScript !== "function") {
+      return;
+    }
+
+    const messageName = "QuickSearch:ToggleFromContent";
+    const listener = {
+      receiveMessage(message) {
+        if (message.data && message.data.action === "show") {
+          showQuickSearchContainer();
+        } else {
+          toggleQuickSearchPopup();
+        }
+      },
+    };
+    const frameScript = `(() => {
+        if (this.__quickSearchShortcutInstalled) return;
+        this.__quickSearchShortcutInstalled = true;
+
+        const shortcut = ${JSON.stringify(SHORTCUTS_TOGGLE_KEY)};
+        const parts = shortcut.split("+").map(part => part.trim().toLowerCase()).filter(Boolean);
+        const aliases = { space: " ", spacebar: " " };
+        const mainKey = aliases[parts[parts.length - 1]] || parts[parts.length - 1] || "";
+        const hasCtrl = parts.includes("ctrl") || parts.includes("control") || parts.includes("accel");
+        const hasShift = parts.includes("shift");
+        const hasAlt = parts.includes("alt");
+        let shortcutKeyDown = false;
+
+        function isShortcutKey(event) {
+            const eventKey = String(event.key || "").toLowerCase();
+            return eventKey === mainKey || (mainKey === " " && event.code === "Space");
+        }
+
+        function hasShortcutModifiers(event) {
+            return event.ctrlKey === hasCtrl &&
+                event.shiftKey === hasShift &&
+                event.altKey === hasAlt;
+        }
+
+        function consume(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+
+        addEventListener("keydown", event => {
+            if (!event.isTrusted) return;
+
+            const isConfiguredShortcut = isShortcutKey(event) && hasShortcutModifiers(event);
+            const isLegacyCtrlEnter = event.ctrlKey && event.key === "Enter";
+            if (!isConfiguredShortcut && !isLegacyCtrlEnter) return;
+
+            consume(event);
+            if (!event.repeat) {
+                if (isConfiguredShortcut) {
+                    shortcutKeyDown = true;
+                    sendAsyncMessage("QuickSearch:ToggleFromContent");
+                } else {
+                    sendAsyncMessage("QuickSearch:ToggleFromContent", { action: "show" });
+                }
+            }
+        }, true);
+
+        addEventListener("keyup", event => {
+            if (!shortcutKeyDown || !isShortcutKey(event)) return;
+            consume(event);
+            shortcutKeyDown = false;
+        }, true);
+    })();`;
+    const frameScriptURL = "data:application/javascript," + encodeURIComponent(frameScript);
+
+    try {
+      messageManager.addMessageListener(messageName, listener);
+      messageManager.loadFrameScript(frameScriptURL, true);
+      window[marker] = { messageName, listener, frameScriptURL };
+    } catch (error) {
+      messageManager.removeMessageListener(messageName, listener);
+      console.warn("QuickSearch NoBar: could not install the content shortcut listener:", error);
+    }
   }
 
   function toggleQuickSearchPopup() {
@@ -708,96 +786,49 @@
     }
   }
 
-  function registerChromeShortcut() {
-    if (
-      document.getElementById("quicksearch-toggle-key") ||
-      document.getElementById("quicksearch-toggle-keyset")
-    ) {
-      return;
-    }
+  function attachGlobalHotkey() {
+    installContentShortcutListener();
 
-    const parsed = parseShortcut(SHORTCUTS_TOGGLE_KEY);
-    if (!parsed.mainKey) {
-      return;
-    }
+    function consumeToggleShortcut(event) {
+      if (!shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
+        return false;
+      }
 
-    const key = createChromeElement("key");
-    key.id = "quicksearch-toggle-key";
-
-    // Keys that are not a printable character have no valid `key` value on a
-    // XUL <key>; they are addressed by keycode instead.
-    const KEYCODES = {
-      enter: "VK_RETURN",
-      " ": "VK_SPACE",
-      tab: "VK_TAB",
-      backspace: "VK_BACK",
-      escape: "VK_ESCAPE",
-      arrowup: "VK_UP",
-      arrowdown: "VK_DOWN",
-      arrowleft: "VK_LEFT",
-      arrowright: "VK_RIGHT",
-    };
-
-    if (KEYCODES[parsed.mainKey]) {
-      key.setAttribute("keycode", KEYCODES[parsed.mainKey]);
-    } else {
-      key.setAttribute(
-        "key",
-        parsed.mainKey.length === 1 ? parsed.mainKey.toUpperCase() : parsed.mainKey,
-      );
-    }
-
-    const modifiers = [];
-    if (parsed.ctrl) modifiers.push("accel");
-    if (parsed.shift) modifiers.push("shift");
-    if (parsed.alt) modifiers.push("alt");
-    key.setAttribute("modifiers", modifiers.join(" "));
-    key.addEventListener("command", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      toggleQuickSearchPopup();
-    });
-
-    const mainKeyset = document.getElementById("mainKeyset");
-    if (mainKeyset) {
-      mainKeyset.appendChild(key);
-      return;
+      event.stopImmediatePropagation();
+      return true;
     }
-
-    const keyset = createChromeElement("keyset");
-    keyset.id = "quicksearch-toggle-keyset";
-    keyset.appendChild(key);
-    getChromeRoot().appendChild(keyset);
-  }
-
-  function attachGlobalHotkey() {
-    registerChromeShortcut();
 
     window.addEventListener(
       "keydown",
-      function (event) {
-        // Check for Ctrl+Enter (original hotkey)
+      (event) => {
+        // Page events are stopped and relayed by the content frame script.
+        // This listener handles shortcuts when browser chrome has focus.
+        const selectedBrowser = typeof gBrowser !== "undefined" && gBrowser.selectedBrowser;
+        if (selectedBrowser && (event.target === selectedBrowser || selectedBrowser.contains(event.target))) {
+          return;
+        }
+
+        // Preserve the original Ctrl+Enter behavior.
         if (event.ctrlKey && event.key === "Enter") {
           event.preventDefault();
           event.stopPropagation();
-
+          event.stopImmediatePropagation();
           showQuickSearchContainer();
-
-          return false;
+          return;
         }
 
-        // Check for custom toggle key
-        if (shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
-          event.preventDefault();
-          event.stopPropagation();
-
+        if (consumeToggleShortcut(event) && !event.repeat) {
           toggleQuickSearchPopup();
-
-          return false;
         }
       },
       true,
     );
+
+    // Some media players handle shortcuts on keyup; consume the Space release
+    // as well as keydown when it belongs to the configured toggle shortcut.
+    window.addEventListener("keyup", consumeToggleShortcut, true);
   }
 
   function showQuickSearchContainer() {

@@ -883,19 +883,10 @@
             : document.createElement(tagName);
     }
 
-    function getChromeRoot() {
-        return (
-            document.body ||
-            document.getElementById("main-window") ||
-            document.documentElement
-        );
-    }
-
     // Key names as written in the preference do not always match what the DOM
     // reports for that key: the spacebar arrives as " " rather than "space",
-    // and "Esc" as "escape". Fold both sides onto one spelling so a preference
-    // like "Ctrl+Space" works. XUL <key> elements need their own handling,
-    // since they take a keycode rather than a character for these.
+    // and "Esc" as "escape". Fold both sides onto one spelling so preferences
+    // like "Ctrl+Space" work consistently.
     const KEY_ALIASES = {
         space: " ",
         spacebar: " ",
@@ -925,13 +916,87 @@
 
     function shortcutMatches(event, shortcut) {
         const parsed = parseShortcut(shortcut);
+        const eventKey = normalizeKey(event.key);
+        const isSpace = parsed.mainKey === " " && event.code === "Space";
         return (
             !!parsed.mainKey &&
             event.ctrlKey === parsed.ctrl &&
             event.shiftKey === parsed.shift &&
             event.altKey === parsed.alt &&
-            normalizeKey(event.key) === parsed.mainKey
+            (eventKey === parsed.mainKey || isSpace)
         );
+    }
+
+    function installContentShortcutListener() {
+        const marker = "__quickSearchContentShortcutListener";
+        if (window[marker]) return;
+
+        const messageManager = window.messageManager;
+        if (!messageManager || typeof messageManager.loadFrameScript !== "function") {
+            return;
+        }
+
+        const messageName = "QuickSearch:ToggleFromContent";
+        const listener = {
+            receiveMessage() {
+                toggleQuickSearchPopup();
+            },
+        };
+        const frameScript = `(() => {
+            if (this.__quickSearchShortcutInstalled) return;
+            this.__quickSearchShortcutInstalled = true;
+
+            const shortcut = ${JSON.stringify(SHORTCUTS_TOGGLE_KEY)};
+            const parts = shortcut.split("+").map(part => part.trim().toLowerCase()).filter(Boolean);
+            const aliases = { space: " ", spacebar: " " };
+            const mainKey = aliases[parts[parts.length - 1]] || parts[parts.length - 1] || "";
+            const hasCtrl = parts.includes("ctrl") || parts.includes("control") || parts.includes("accel");
+            const hasShift = parts.includes("shift");
+            const hasAlt = parts.includes("alt");
+            let shortcutKeyDown = false;
+
+            function isShortcutKey(event) {
+                const eventKey = String(event.key || "").toLowerCase();
+                return eventKey === mainKey || (mainKey === " " && event.code === "Space");
+            }
+
+            function hasShortcutModifiers(event) {
+                return event.ctrlKey === hasCtrl &&
+                    event.shiftKey === hasShift &&
+                    event.altKey === hasAlt;
+            }
+
+            function consume(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+            }
+
+            addEventListener("keydown", event => {
+                if (!event.isTrusted || !isShortcutKey(event) || !hasShortcutModifiers(event)) return;
+                consume(event);
+                if (!event.repeat) {
+                    shortcutKeyDown = true;
+                    sendAsyncMessage("QuickSearch:ToggleFromContent");
+                }
+            }, true);
+
+            addEventListener("keyup", event => {
+                if (!shortcutKeyDown || !isShortcutKey(event)) return;
+                consume(event);
+                shortcutKeyDown = false;
+            }, true);
+        })();`;
+        const frameScriptURL = "data:application/javascript," + encodeURIComponent(frameScript);
+
+        try {
+            messageManager.addMessageListener(messageName, listener);
+            messageManager.loadFrameScript(frameScriptURL, true);
+            window[marker] = { messageName, listener, frameScriptURL };
+        } catch (error) {
+            messageManager.removeMessageListener(messageName, listener);
+            console.warn("QuickSearch: Could not install the content shortcut listener:", error);
+        }
     }
 
     function toggleQuickSearchPopup() {
@@ -976,79 +1041,37 @@
         }
     }
 
-    function registerChromeShortcut() {
-        if (
-            document.getElementById("quicksearch-toggle-key") ||
-            document.getElementById("quicksearch-toggle-keyset")
-        ) {
-            return;
-        }
-
-        const parsed = parseShortcut(SHORTCUTS_TOGGLE_KEY);
-        if (!parsed.mainKey) {
-            return;
-        }
-
-        const key = createChromeElement("key");
-        key.id = "quicksearch-toggle-key";
-
-        // Keys that are not a printable character have no valid `key` value on a
-        // XUL <key>; they are addressed by keycode instead.
-        const KEYCODES = {
-            enter: "VK_RETURN",
-            " ": "VK_SPACE",
-            tab: "VK_TAB",
-            backspace: "VK_BACK",
-            escape: "VK_ESCAPE",
-            arrowup: "VK_UP",
-            arrowdown: "VK_DOWN",
-            arrowleft: "VK_LEFT",
-            arrowright: "VK_RIGHT",
-        };
-
-        if (KEYCODES[parsed.mainKey]) {
-            key.setAttribute("keycode", KEYCODES[parsed.mainKey]);
-        } else {
-            key.setAttribute("key", parsed.mainKey.length === 1 ? parsed.mainKey.toUpperCase() : parsed.mainKey);
-        }
-
-        const modifiers = [];
-        if (parsed.ctrl) modifiers.push("accel");
-        if (parsed.shift) modifiers.push("shift");
-        if (parsed.alt) modifiers.push("alt");
-        key.setAttribute("modifiers", modifiers.join(" "));
-        key.addEventListener("command", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            toggleQuickSearchPopup();
-        });
-
-        const mainKeyset = document.getElementById("mainKeyset");
-        if (mainKeyset) {
-            mainKeyset.appendChild(key);
-            return;
-        }
-
-        const keyset = createChromeElement("keyset");
-        keyset.id = "quicksearch-toggle-keyset";
-        keyset.appendChild(key);
-        getChromeRoot().appendChild(keyset);
-    }
-
     // Add keyboard shortcuts
     function addKeyboardShortcuts() {
-        registerChromeShortcut();
+        installContentShortcutListener();
 
-        function handleGlobalShortcuts(event) {
-            // Check if the pressed key combination matches the toggle shortcut
-            if (shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
-                event.preventDefault();
-                event.stopPropagation();
+        function consumeToggleShortcut(event) {
+            if (!shortcutMatches(event, SHORTCUTS_TOGGLE_KEY)) {
+                return false;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            return true;
+        }
+
+        window.addEventListener('keydown', (event) => {
+            // Page events are stopped and relayed by the content frame script.
+            // This listener handles shortcuts when browser chrome has focus.
+            const selectedBrowser = typeof gBrowser !== "undefined" && gBrowser.selectedBrowser;
+            if (selectedBrowser && (event.target === selectedBrowser || selectedBrowser.contains(event.target))) {
+                return;
+            }
+
+            if (consumeToggleShortcut(event) && !event.repeat) {
                 toggleQuickSearchPopup();
             }
-        }
-        
-        document.addEventListener('keydown', handleGlobalShortcuts, true);
+        }, true);
+
+        // Consume the release too so sites listening on keyup cannot treat the
+        // shortcut's Space key as a media control.
+        window.addEventListener('keyup', consumeToggleShortcut, true);
     }
 
     // Function to close the quick search container
