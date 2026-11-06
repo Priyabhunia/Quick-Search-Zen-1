@@ -311,6 +311,37 @@
                 position: relative;
                 overflow: hidden;
             }
+
+            #quicksearch-history-controls {
+                display: flex;
+                align-items: center;
+                gap: 3px;
+                flex-shrink: 0;
+                position: relative;
+                z-index: 1;
+            }
+
+            .quicksearch-history-button {
+                width: 26px;
+                height: 26px;
+                padding: 0;
+                border: 1px solid ${currentTheme.containerBorder};
+                border-radius: 5px;
+                background: transparent;
+                color: ${currentTheme.headerColor};
+                font-size: 18px;
+                line-height: 1;
+                cursor: pointer;
+            }
+
+            .quicksearch-history-button:hover:not(:disabled) {
+                background-color: ${currentTheme.closeBtnHoverBg};
+            }
+
+            .quicksearch-history-button:disabled {
+                opacity: 0.4;
+                cursor: default;
+            }
             
             #quicksearch-content-frame {
                 width: 100%;
@@ -751,7 +782,9 @@
 
                 // Clear any previous content
                 while (browserContainer.firstChild) {
-                    browserContainer.removeChild(browserContainer.firstChild);
+                    const oldFrame = browserContainer.firstChild;
+                    cleanupQuickSearchHistory(oldFrame);
+                    browserContainer.removeChild(oldFrame);
                 }
 
                 // Make the container visible immediately
@@ -775,6 +808,7 @@
                     browserElement.style.overflow = 'hidden';
 
                     browserContainer.appendChild(browserElement);
+                    installQuickSearchHistory(browserElement);
 
                     const success = loadContentInBrowser(browserElement, searchUrl);
 
@@ -782,6 +816,7 @@
                         styleContentFrame(browserElement);
                         return;
                     } else {
+                        cleanupQuickSearchHistory(browserElement);
                         browserContainer.removeChild(browserElement);
                     }
                 }
@@ -804,6 +839,7 @@
                 // Remove the load event listener that adjusted dimensions
                 // First append to container, then set source
                 browserContainer.appendChild(iframe);
+                installQuickSearchHistory(iframe);
 
                 // Small delay before setting source
                 setTimeout(() => {
@@ -1072,6 +1108,26 @@
         // Consume the release too so sites listening on keyup cannot treat the
         // shortcut's Space key as a media control.
         window.addEventListener('keyup', consumeToggleShortcut, true);
+
+        window.addEventListener('keydown', (event) => {
+            const container = document.getElementById('quicksearch-container');
+            const frame = document.getElementById('quicksearch-content-frame');
+            const eventPath = event.composedPath?.() || [];
+            const eventBelongsToQuickSearch = container && (
+                container.contains(event.target) ||
+                eventPath.includes(frame) ||
+                document.activeElement === frame
+            );
+            if (!container?.classList.contains('visible') || !eventBelongsToQuickSearch) return;
+            if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+            const direction = event.key === 'ArrowLeft' ? 'back' : event.key === 'ArrowRight' ? 'forward' : null;
+            if (!direction) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            navigateQuickSearchHistory(direction);
+        }, true);
     }
 
     // Function to close the quick search container
@@ -1093,11 +1149,13 @@
             // Clear iframe source when closing
             const iframe = document.getElementById('quicksearch-content-frame');
             if (iframe) {
+                cleanupQuickSearchHistory(iframe);
                 try {
                     iframe.src = 'about:blank';
                 } catch (err) {
                 }
             }
+            refreshQuickSearchHistoryButtons(null);
             
             // Remove search input if exists
             const searchInput = document.getElementById('quicksearch-input');
@@ -1117,6 +1175,61 @@
                 container._escKeyListener = null;
             }
         }, animationDuration);
+    }
+
+    function refreshQuickSearchHistoryButtons(frame = document.getElementById('quicksearch-content-frame')) {
+        const controls = document.getElementById('quicksearch-history-controls');
+        if (!controls) return;
+        const buttons = controls.querySelectorAll('.quicksearch-history-button');
+        // A remote browser's canGo* values can be false even after navigation.
+        // Keep the buttons clickable so the browser can attempt the action.
+        buttons.forEach((button) => { button.disabled = false; });
+    }
+
+    function navigateQuickSearchHistory(direction, frame = document.getElementById('quicksearch-content-frame')) {
+        if (!frame || (direction !== 'back' && direction !== 'forward')) return;
+
+        try {
+            const method = direction === 'back' ? 'goBack' : 'goForward';
+            if (typeof frame[method] === 'function') {
+                // Invoke the browser element itself first. This path also works
+                // when Zen's webNavigation wrapper reports stale history flags.
+                frame[method]();
+            } else {
+                const navigation = frame.webNavigation || frame.docShell?.webNavigation;
+                if (navigation && typeof navigation[method] === 'function') {
+                    navigation[method]();
+                } else if (frame.browsingContext && typeof frame.browsingContext[method] === 'function') {
+                    frame.browsingContext[method]();
+                } else if (frame.localName === 'iframe') {
+                    const forwardCount = frame._quickSearchForwardAvailable || 0;
+                    frame._quickSearchForwardAvailable = direction === 'back'
+                        ? forwardCount + 1
+                        : Math.max(0, forwardCount - 1);
+                    frame.contentWindow.history[direction]();
+                } else {
+                    return;
+                }
+            }
+        } catch (error) {
+            console.warn('QuickSearch: could not navigate embedded history:', error);
+        }
+        setTimeout(() => refreshQuickSearchHistoryButtons(frame), 100);
+    }
+
+    function installQuickSearchHistory(frame) {
+        if (!frame) return;
+        frame._quickSearchLoadListener = () => refreshQuickSearchHistoryButtons(frame);
+        frame.addEventListener('load', frame._quickSearchLoadListener, true);
+        refreshQuickSearchHistoryButtons(frame);
+    }
+
+    function cleanupQuickSearchHistory(frame) {
+        if (!frame) return;
+        if (frame._quickSearchLoadListener) {
+            frame.removeEventListener('load', frame._quickSearchLoadListener, true);
+            frame._quickSearchLoadListener = null;
+        }
     }
     
         function saveContainerDimensions(width, height) {
@@ -1326,6 +1439,32 @@
             header.appendChild(dragHandle);
         }
         header.appendChild(quicksearchEngineWrapper);
+        const historyControls = document.createElement('div');
+        historyControls.id = 'quicksearch-history-controls';
+
+        const backButton = document.createElement('button');
+        backButton.className = 'quicksearch-history-button';
+        backButton.textContent = '←';
+        backButton.title = 'Back (Alt+Left)';
+        backButton.setAttribute('aria-label', 'Back');
+        backButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigateQuickSearchHistory('back');
+        });
+
+        const forwardButton = document.createElement('button');
+        forwardButton.className = 'quicksearch-history-button';
+        forwardButton.textContent = '→';
+        forwardButton.title = 'Forward (Alt+Right)';
+        forwardButton.setAttribute('aria-label', 'Forward');
+        forwardButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigateQuickSearchHistory('forward');
+        });
+
+        historyControls.appendChild(backButton);
+        historyControls.appendChild(forwardButton);
+        header.appendChild(historyControls);
         header.appendChild(closeButton);
 
         // Container for the browser element
@@ -1471,7 +1610,6 @@
             browser.setAttribute("type", "content");
             browser.setAttribute("remote", "true");
             browser.setAttribute("maychangeremoteness", "true");
-            browser.setAttribute("disablehistory", "true");
             browser.setAttribute("flex", "1");
             browser.setAttribute("noautohide", "true");
             browser.setAttribute("nodefaultsrc", "true");
