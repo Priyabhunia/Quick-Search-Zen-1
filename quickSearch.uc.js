@@ -699,7 +699,39 @@
         }
     }
 
+    function getDirectNavigationURL(input) {
+        const text = String(input ?? '').trim();
+        if (!text) return null;
+
+        const hasWebScheme = /^https?:\/\//i.test(text);
+        if (hasWebScheme) {
+            try {
+                const url = new URL(text);
+                return url.hostname && (url.protocol === 'http:' || url.protocol === 'https:')
+                    ? url.href
+                    : null;
+            } catch (error) {
+                return null;
+            }
+        }
+
+        // Don't reinterpret non-web protocols such as ftp:, file:, or javascript:.
+        if (/^[^\s]+:\/\//i.test(text) || /\s/.test(text)) return null;
+
+        try {
+            const address = text.replace(/^\/\//, '');
+            const url = new URL(`https://${address}`);
+            const host = url.hostname;
+            const looksLikeAddress = host === 'localhost' || host.includes('.') || host.startsWith('[') || !!url.port;
+            return looksLikeAddress ? url.href : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
       async function getSearchURLFromInput(input) {
+          const directURL = getDirectNavigationURL(input);
+          if (directURL) return directURL;
           let engineName = '';
           try {
               const indicatorEl = document.getElementById("urlbar-search-mode-indicator-title");
@@ -717,6 +749,8 @@
 
     // Function to get search URL with a specific engine
     async function getSearchURLWithEngine(query, engineName) {
+        const directURL = getDirectNavigationURL(query);
+        if (directURL) return directURL;
         let engines = await SearchSvc.getEngines();
         const getAliases = (e) => e.aliases || e._definedAliases || [];
         let engine = engines.find(e => e.name === engineName || getAliases(e).includes(engineName));
