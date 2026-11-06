@@ -864,7 +864,13 @@
     window.addEventListener("keydown", (event) => {
       const container = document.getElementById("quicksearch-container");
       const frame = document.getElementById("quicksearch-content-frame");
-      if (!container?.classList.contains("visible") || !container.contains(event.target) || event.target === frame) return;
+      const eventPath = event.composedPath?.() || [];
+      const eventBelongsToQuickSearch = container && (
+        container.contains(event.target) ||
+        eventPath.includes(frame) ||
+        document.activeElement === frame
+      );
+      if (!container?.classList.contains("visible") || !eventBelongsToQuickSearch) return;
       if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 
       const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
@@ -1037,64 +1043,39 @@
     }, animationDuration);
   }
 
-  function getQuickSearchHistoryState(frame) {
-    const state = { canGoBack: false, canGoForward: false };
-    if (!frame) return state;
-
-    try {
-      const navigation = frame.webNavigation || frame.docShell?.webNavigation;
-      if (navigation) {
-        state.canGoBack = !!navigation.canGoBack;
-        state.canGoForward = !!navigation.canGoForward;
-        return state;
-      }
-    } catch (error) {}
-
-    try {
-      state.canGoBack = !!frame.canGoBack;
-      state.canGoForward = !!frame.canGoForward;
-    } catch (error) {}
-
-    if (frame.localName === "iframe") {
-      try {
-        state.canGoBack = frame.contentWindow.history.length > 1;
-        state.canGoForward = (frame._quickSearchForwardAvailable || 0) > 0;
-      } catch (error) {}
-    }
-    return state;
-  }
-
   function refreshQuickSearchHistoryButtons(frame = document.getElementById("quicksearch-content-frame")) {
     const controls = document.getElementById("quicksearch-history-controls");
     if (!controls) return;
     const buttons = controls.querySelectorAll(".quicksearch-history-button");
-    const state = getQuickSearchHistoryState(frame);
-    if (buttons[0]) buttons[0].disabled = !state.canGoBack;
-    if (buttons[1]) buttons[1].disabled = !state.canGoForward;
+    // A remote browser's canGo* values can be false even after navigation.
+    // Keep the buttons clickable so the browser can attempt the action.
+    buttons.forEach((button) => { button.disabled = false; });
   }
 
   function navigateQuickSearchHistory(direction, frame = document.getElementById("quicksearch-content-frame")) {
-    if (!frame) return;
-    const state = getQuickSearchHistoryState(frame);
-    if (direction === "back" && !state.canGoBack) return;
-    if (direction === "forward" && !state.canGoForward) return;
+    if (!frame || (direction !== "back" && direction !== "forward")) return;
 
     try {
-      const navigation = frame.webNavigation || frame.docShell?.webNavigation;
-      if (navigation) {
-        direction === "back" ? navigation.goBack() : navigation.goForward();
-      } else if (typeof frame.goBack === "function" && direction === "back") {
-        frame.goBack();
-      } else if (typeof frame.goForward === "function" && direction === "forward") {
-        frame.goForward();
-      } else if (frame.localName === "iframe") {
-        const forwardCount = frame._quickSearchForwardAvailable || 0;
-        frame._quickSearchForwardAvailable = direction === "back"
-          ? forwardCount + 1
-          : Math.max(0, forwardCount - 1);
-        frame.contentWindow.history[direction]();
+      const method = direction === "back" ? "goBack" : "goForward";
+      if (typeof frame[method] === "function") {
+        // Invoke the browser element itself first. This path also works
+        // when Zen's webNavigation wrapper reports stale history flags.
+        frame[method]();
       } else {
-        return;
+        const navigation = frame.webNavigation || frame.docShell?.webNavigation;
+        if (navigation && typeof navigation[method] === "function") {
+          navigation[method]();
+        } else if (frame.browsingContext && typeof frame.browsingContext[method] === "function") {
+          frame.browsingContext[method]();
+        } else if (frame.localName === "iframe") {
+          const forwardCount = frame._quickSearchForwardAvailable || 0;
+          frame._quickSearchForwardAvailable = direction === "back"
+            ? forwardCount + 1
+            : Math.max(0, forwardCount - 1);
+          frame.contentWindow.history[direction]();
+        } else {
+          return;
+        }
       }
     } catch (error) {
       console.warn("QuickSearch NoBar: could not navigate embedded history:", error);
@@ -1104,99 +1085,17 @@
 
   function installQuickSearchHistory(frame) {
     if (!frame) return;
-
-    if (frame.localName === "iframe") {
-      const keyListener = (event) => {
-        if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-        const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
-        if (!direction) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        navigateQuickSearchHistory(direction, frame);
-      };
-      frame._quickSearchLoadListener = () => {
-        try {
-          if (frame._quickSearchHistoryWindow && frame._quickSearchHistoryWindowListener) {
-            frame._quickSearchHistoryWindow.removeEventListener("keydown", frame._quickSearchHistoryWindowListener, true);
-          }
-          frame._quickSearchHistoryWindow = frame.contentWindow;
-          frame._quickSearchHistoryWindowListener = keyListener;
-          frame.contentWindow.addEventListener("keydown", keyListener, true);
-        } catch (error) {}
-        refreshQuickSearchHistoryButtons(frame);
-      };
-      frame.addEventListener("load", frame._quickSearchLoadListener);
-      frame._quickSearchLoadListener();
-      return;
-    }
-
-    const messageManager = frame.messageManager || frame.frameLoader?.messageManager;
-    if (!messageManager || typeof messageManager.loadFrameScript !== "function") return;
-
-    const actionMessage = "QuickSearch:EmbeddedHistoryAction";
-    const changedMessage = "QuickSearch:EmbeddedHistoryChanged";
-    const listener = {
-      receiveMessage(message) {
-        if (message.name === actionMessage) {
-          navigateQuickSearchHistory(message.data?.direction, frame);
-        } else {
-          refreshQuickSearchHistoryButtons(frame);
-        }
-      },
-    };
-    const frameScript = `(() => {
-        if (this.__quickSearchHistoryInstalled) return;
-        this.__quickSearchHistoryInstalled = true;
-        function consume(event) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-        }
-        addEventListener("keydown", event => {
-          if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-          const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
-          if (!direction) return;
-          consume(event);
-          sendAsyncMessage("${actionMessage}", { direction });
-        }, true);
-        const notify = () => sendAsyncMessage("${changedMessage}");
-        addEventListener("pageshow", notify, true);
-        addEventListener("popstate", notify, true);
-        addEventListener("hashchange", notify, true);
-    })();`;
-    const frameScriptURL = "data:application/javascript," + encodeURIComponent(frameScript);
-
-    try {
-      messageManager.addMessageListener(actionMessage, listener);
-      messageManager.addMessageListener(changedMessage, listener);
-      messageManager.loadFrameScript(frameScriptURL, true);
-      frame._quickSearchHistoryManager = messageManager;
-      frame._quickSearchHistoryListener = listener;
-      frame._quickSearchHistoryMessages = [actionMessage, changedMessage];
-    } catch (error) {
-      messageManager.removeMessageListener(actionMessage, listener);
-      messageManager.removeMessageListener(changedMessage, listener);
-      console.warn("QuickSearch NoBar: could not install embedded history shortcuts:", error);
-    }
+    frame._quickSearchLoadListener = () => refreshQuickSearchHistoryButtons(frame);
+    frame.addEventListener("load", frame._quickSearchLoadListener, true);
     refreshQuickSearchHistoryButtons(frame);
   }
 
   function cleanupQuickSearchHistory(frame) {
     if (!frame) return;
-    if (frame._quickSearchHistoryManager && frame._quickSearchHistoryListener) {
-      for (const messageName of frame._quickSearchHistoryMessages || []) {
-        frame._quickSearchHistoryManager.removeMessageListener(messageName, frame._quickSearchHistoryListener);
-      }
-    }
     if (frame._quickSearchLoadListener) {
-      frame.removeEventListener("load", frame._quickSearchLoadListener);
+      frame.removeEventListener("load", frame._quickSearchLoadListener, true);
+      frame._quickSearchLoadListener = null;
     }
-    try {
-      if (frame._quickSearchHistoryWindow && frame._quickSearchHistoryWindowListener) {
-        frame._quickSearchHistoryWindow.removeEventListener("keydown", frame._quickSearchHistoryWindowListener, true);
-      }
-    } catch (error) {}
   }
 
   function saveContainerDimensions(width, height) {
@@ -1451,7 +1350,6 @@
     backButton.textContent = "←";
     backButton.title = "Back (Alt+Left)";
     backButton.setAttribute("aria-label", "Back");
-    backButton.disabled = true;
     backButton.addEventListener("click", (e) => {
       e.stopPropagation();
       navigateQuickSearchHistory("back");
@@ -1462,7 +1360,6 @@
     forwardButton.textContent = "→";
     forwardButton.title = "Forward (Alt+Right)";
     forwardButton.setAttribute("aria-label", "Forward");
-    forwardButton.disabled = true;
     forwardButton.addEventListener("click", (e) => {
       e.stopPropagation();
       navigateQuickSearchHistory("forward");
