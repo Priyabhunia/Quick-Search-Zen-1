@@ -405,6 +405,37 @@
                 transform-origin: 0 0;
                 transform: scale(1);
             }
+
+            #quicksearch-history-controls {
+                display: flex;
+                align-items: center;
+                gap: 3px;
+                flex-shrink: 0;
+                position: relative;
+                z-index: 1;
+            }
+
+            .quicksearch-history-button {
+                width: 26px;
+                height: 26px;
+                padding: 0;
+                border: 1px solid ${currentTheme.containerBorder};
+                border-radius: 5px;
+                background: transparent;
+                color: ${currentTheme.headerColor};
+                font-size: 18px;
+                line-height: 1;
+                cursor: pointer;
+            }
+
+            .quicksearch-history-button:hover:not(:disabled) {
+                background-color: ${currentTheme.closeBtnHoverBg};
+            }
+
+            .quicksearch-history-button:disabled {
+                opacity: 0.4;
+                cursor: default;
+            }
             
             .quicksearch-close-button {
                 width: 24px;
@@ -829,6 +860,20 @@
     // Some media players handle shortcuts on keyup; consume the Space release
     // as well as keydown when it belongs to the configured toggle shortcut.
     window.addEventListener("keyup", consumeToggleShortcut, true);
+
+    window.addEventListener("keydown", (event) => {
+      const container = document.getElementById("quicksearch-container");
+      const frame = document.getElementById("quicksearch-content-frame");
+      if (!container?.classList.contains("visible") || !container.contains(event.target) || event.target === frame) return;
+      if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+      const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
+      if (!direction) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      navigateQuickSearchHistory(direction);
+    }, true);
   }
 
   function showQuickSearchContainer() {
@@ -862,7 +907,9 @@
         container.classList.add("expanded");
 
         while (browserContainer.firstChild) {
-          browserContainer.removeChild(browserContainer.firstChild);
+          const oldFrame = browserContainer.firstChild;
+          cleanupQuickSearchHistory(oldFrame);
+          browserContainer.removeChild(oldFrame);
         }
 
         const browserElement = createBrowserElement();
@@ -876,6 +923,7 @@
           browserElement.style.overflow = "hidden";
 
           browserContainer.appendChild(browserElement);
+          installQuickSearchHistory(browserElement);
 
           const success = loadContentInBrowser(browserElement, searchUrl);
 
@@ -883,6 +931,7 @@
             styleContentFrame(browserElement);
             return;
           } else {
+            cleanupQuickSearchHistory(browserElement);
             browserContainer.removeChild(browserElement);
           }
         }
@@ -907,6 +956,7 @@
         // Remove the load event listener that adjusted dimensions
 
         browserContainer.appendChild(iframe);
+        installQuickSearchHistory(iframe);
 
         setTimeout(() => {
           iframe.src = searchUrl;
@@ -971,6 +1021,7 @@
 
       const iframe = document.getElementById("quicksearch-content-frame");
       if (iframe) {
+        cleanupQuickSearchHistory(iframe);
         try {
           iframe.src = "about:blank";
         } catch (err) {
@@ -982,7 +1033,170 @@
         document.removeEventListener("keydown", container._escKeyListener);
         container._escKeyListener = null;
       }
+      refreshQuickSearchHistoryButtons(null);
     }, animationDuration);
+  }
+
+  function getQuickSearchHistoryState(frame) {
+    const state = { canGoBack: false, canGoForward: false };
+    if (!frame) return state;
+
+    try {
+      const navigation = frame.webNavigation || frame.docShell?.webNavigation;
+      if (navigation) {
+        state.canGoBack = !!navigation.canGoBack;
+        state.canGoForward = !!navigation.canGoForward;
+        return state;
+      }
+    } catch (error) {}
+
+    try {
+      state.canGoBack = !!frame.canGoBack;
+      state.canGoForward = !!frame.canGoForward;
+    } catch (error) {}
+
+    if (frame.localName === "iframe") {
+      try {
+        state.canGoBack = frame.contentWindow.history.length > 1;
+        state.canGoForward = (frame._quickSearchForwardAvailable || 0) > 0;
+      } catch (error) {}
+    }
+    return state;
+  }
+
+  function refreshQuickSearchHistoryButtons(frame = document.getElementById("quicksearch-content-frame")) {
+    const controls = document.getElementById("quicksearch-history-controls");
+    if (!controls) return;
+    const buttons = controls.querySelectorAll(".quicksearch-history-button");
+    const state = getQuickSearchHistoryState(frame);
+    if (buttons[0]) buttons[0].disabled = !state.canGoBack;
+    if (buttons[1]) buttons[1].disabled = !state.canGoForward;
+  }
+
+  function navigateQuickSearchHistory(direction, frame = document.getElementById("quicksearch-content-frame")) {
+    if (!frame) return;
+    const state = getQuickSearchHistoryState(frame);
+    if (direction === "back" && !state.canGoBack) return;
+    if (direction === "forward" && !state.canGoForward) return;
+
+    try {
+      const navigation = frame.webNavigation || frame.docShell?.webNavigation;
+      if (navigation) {
+        direction === "back" ? navigation.goBack() : navigation.goForward();
+      } else if (typeof frame.goBack === "function" && direction === "back") {
+        frame.goBack();
+      } else if (typeof frame.goForward === "function" && direction === "forward") {
+        frame.goForward();
+      } else if (frame.localName === "iframe") {
+        const forwardCount = frame._quickSearchForwardAvailable || 0;
+        frame._quickSearchForwardAvailable = direction === "back"
+          ? forwardCount + 1
+          : Math.max(0, forwardCount - 1);
+        frame.contentWindow.history[direction]();
+      } else {
+        return;
+      }
+    } catch (error) {
+      console.warn("QuickSearch NoBar: could not navigate embedded history:", error);
+    }
+    setTimeout(() => refreshQuickSearchHistoryButtons(frame), 100);
+  }
+
+  function installQuickSearchHistory(frame) {
+    if (!frame) return;
+
+    if (frame.localName === "iframe") {
+      const keyListener = (event) => {
+        if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
+        if (!direction) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        navigateQuickSearchHistory(direction, frame);
+      };
+      frame._quickSearchLoadListener = () => {
+        try {
+          if (frame._quickSearchHistoryWindow && frame._quickSearchHistoryWindowListener) {
+            frame._quickSearchHistoryWindow.removeEventListener("keydown", frame._quickSearchHistoryWindowListener, true);
+          }
+          frame._quickSearchHistoryWindow = frame.contentWindow;
+          frame._quickSearchHistoryWindowListener = keyListener;
+          frame.contentWindow.addEventListener("keydown", keyListener, true);
+        } catch (error) {}
+        refreshQuickSearchHistoryButtons(frame);
+      };
+      frame.addEventListener("load", frame._quickSearchLoadListener);
+      frame._quickSearchLoadListener();
+      return;
+    }
+
+    const messageManager = frame.messageManager || frame.frameLoader?.messageManager;
+    if (!messageManager || typeof messageManager.loadFrameScript !== "function") return;
+
+    const actionMessage = "QuickSearch:EmbeddedHistoryAction";
+    const changedMessage = "QuickSearch:EmbeddedHistoryChanged";
+    const listener = {
+      receiveMessage(message) {
+        if (message.name === actionMessage) {
+          navigateQuickSearchHistory(message.data?.direction, frame);
+        } else {
+          refreshQuickSearchHistoryButtons(frame);
+        }
+      },
+    };
+    const frameScript = `(() => {
+        if (this.__quickSearchHistoryInstalled) return;
+        this.__quickSearchHistoryInstalled = true;
+        function consume(event) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+        }
+        addEventListener("keydown", event => {
+          if (!event.isTrusted || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          const direction = event.key === "ArrowLeft" ? "back" : event.key === "ArrowRight" ? "forward" : null;
+          if (!direction) return;
+          consume(event);
+          sendAsyncMessage("${actionMessage}", { direction });
+        }, true);
+        const notify = () => sendAsyncMessage("${changedMessage}");
+        addEventListener("pageshow", notify, true);
+        addEventListener("popstate", notify, true);
+        addEventListener("hashchange", notify, true);
+    })();`;
+    const frameScriptURL = "data:application/javascript," + encodeURIComponent(frameScript);
+
+    try {
+      messageManager.addMessageListener(actionMessage, listener);
+      messageManager.addMessageListener(changedMessage, listener);
+      messageManager.loadFrameScript(frameScriptURL, true);
+      frame._quickSearchHistoryManager = messageManager;
+      frame._quickSearchHistoryListener = listener;
+      frame._quickSearchHistoryMessages = [actionMessage, changedMessage];
+    } catch (error) {
+      messageManager.removeMessageListener(actionMessage, listener);
+      messageManager.removeMessageListener(changedMessage, listener);
+      console.warn("QuickSearch NoBar: could not install embedded history shortcuts:", error);
+    }
+    refreshQuickSearchHistoryButtons(frame);
+  }
+
+  function cleanupQuickSearchHistory(frame) {
+    if (!frame) return;
+    if (frame._quickSearchHistoryManager && frame._quickSearchHistoryListener) {
+      for (const messageName of frame._quickSearchHistoryMessages || []) {
+        frame._quickSearchHistoryManager.removeMessageListener(messageName, frame._quickSearchHistoryListener);
+      }
+    }
+    if (frame._quickSearchLoadListener) {
+      frame.removeEventListener("load", frame._quickSearchLoadListener);
+    }
+    try {
+      if (frame._quickSearchHistoryWindow && frame._quickSearchHistoryWindowListener) {
+        frame._quickSearchHistoryWindow.removeEventListener("keydown", frame._quickSearchHistoryWindowListener, true);
+      }
+    } catch (error) {}
   }
 
   function saveContainerDimensions(width, height) {
@@ -1229,6 +1443,34 @@
     }
     searchBarContainer.appendChild(searchBar);
     searchBarContainer.appendChild(quicksearchEngineWrapper);
+    const historyControls = document.createElement("div");
+    historyControls.id = "quicksearch-history-controls";
+
+    const backButton = document.createElement("button");
+    backButton.className = "quicksearch-history-button";
+    backButton.textContent = "←";
+    backButton.title = "Back (Alt+Left)";
+    backButton.setAttribute("aria-label", "Back");
+    backButton.disabled = true;
+    backButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigateQuickSearchHistory("back");
+    });
+
+    const forwardButton = document.createElement("button");
+    forwardButton.className = "quicksearch-history-button";
+    forwardButton.textContent = "→";
+    forwardButton.title = "Forward (Alt+Right)";
+    forwardButton.setAttribute("aria-label", "Forward");
+    forwardButton.disabled = true;
+    forwardButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigateQuickSearchHistory("forward");
+    });
+
+    historyControls.appendChild(backButton);
+    historyControls.appendChild(forwardButton);
+    searchBarContainer.appendChild(historyControls);
     searchBarContainer.appendChild(closeButton);
 
     const browserContainer = document.createElement("div");
@@ -1387,7 +1629,6 @@
       browser.setAttribute("type", "content");
       browser.setAttribute("remote", "true");
       browser.setAttribute("maychangeremoteness", "true");
-      browser.setAttribute("disablehistory", "true");
       browser.setAttribute("flex", "1");
       browser.setAttribute("noautohide", "true");
       browser.setAttribute("nodefaultsrc", "true");
